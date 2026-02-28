@@ -11,6 +11,9 @@ services:
       MYSQL_ROOT_PASSWORD: 123
     volumes:
       - mariadb-data:/var/lib/mysql
+    networks:
+      frappe-network:
+        ipv4_address: 172.20.0.10
 
   # Enable PostgreSQL only if you use it, see development/README.md for more information.
   # postgresql:
@@ -40,12 +43,18 @@ services:
     platform: linux/amd64
     volumes:
       - redis-cache-data:/data
+    networks:
+      frappe-network:
+        ipv4_address: 172.20.0.11
 
   redis-queue:
     image: docker.io/redis:alpine
     platform: linux/amd64
     volumes:
       - redis-queue-data:/data
+    networks:
+      frappe-network:
+        ipv4_address: 172.20.0.12
 
   frappe:
     image: docker.io/frappe/bench:latest
@@ -61,6 +70,9 @@ services:
     ports:
       - 8000-8005:8000-8005
       - 9000-9005:9000-9005
+    networks:
+      frappe-network:
+        ipv4_address: 172.20.0.13
   # enable the below service if you need Cypress UI Tests to be executed
   # Before enabling ensure install_x11_deps.sh has been executed and display variable is exported.
   # Run install_x11_deps.sh again if DISPLAY is not set
@@ -94,3 +106,10 @@ volumes:
   redis-queue-data:
   #postgresql-data:
   #mailpit-data:
+
+networks:
+  frappe-network:
+    driver: bridge
+    ipam:
+      config:
+      - subnet: 172.20.0.0/16

@@ -17,7 +17,7 @@ down:
 
 # Enter the frappe container in interactive mode
 shell:
-    docker compose -f .devcontainer/docker-compose.yml exec --user frappe --workdir /workspace/development frappe bash
+    docker compose -f .devcontainer/docker-compose.yml exec --user frappe --workdir /workspace/development/frappe-bench frappe bash
 
 # View logs from all devcontainer services
 logs:
