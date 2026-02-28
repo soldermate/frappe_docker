@@ -28,7 +28,7 @@ restart: down up
 
 # Clean up all development containers and volumes (careful!)
 clean:
-    docker compose -f .devcontainer/docker-compose.yml down -v
+    docker compose -f .devcontainer/docker-compose.yml down -v --remove-orphans
 
 # Start production environment
 prod-up:
