@@ -1,32 +1,38 @@
 {
-  "name": "Frappe Bench",
+  "name": "Frappe Development Stack",
+  "dockerComposeFile": "./docker-compose.yml",
+  "service": "frappe",
+  "workspaceFolder": "/workspace/development/frappe-bench",
+
+  // Use existing running container
+  "overrideCommand": false,
+  "shutdownAction": "none",
+
   "forwardPorts": [8000, 9000, 6787],
   "remoteUser": "frappe",
+
   "customizations": {
     "vscode": {
+
+      "settings": {
+        "terminal.integrated.profiles.linux": {"frappe bash": {"path": "/bin/bash"}},
+        "python.defaultInterpreterPath": "/workspace/development/frappe-bench/env/bin/python",
+        "terminal.integrated.defaultProfile.linux": "frappe bash",
+        "debug.node.autoAttach": "disabled"
+      },
+
       "extensions": [
         "ms-python.python",
         "ms-vscode.live-server",
         "grapecity.gc-excelviewer",
         "mtxr.sqltools",
         "visualstudioexptteam.vscodeintellicode"
-      ],
-      "settings": {
-        "terminal.integrated.profiles.linux": {
-          "frappe bash": {
-            "path": "/bin/bash"
-          }
-        },
-        "terminal.integrated.defaultProfile.linux": "frappe bash",
-        "debug.node.autoAttach": "disabled"
-      }
+      ]
     }
   },
-  "dockerComposeFile": "./docker-compose.yml",
-  "service": "frappe",
-  "workspaceFolder": "/workspace/development",
-  "shutdownAction": "stopCompose",
+
   "mounts": [
     "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/frappe/.ssh,type=bind,consistency=cached"
   ]
+
 }
