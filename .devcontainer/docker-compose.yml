@@ -1,7 +1,6 @@
 services:
   mariadb:
     image: docker.io/mariadb:10.6
-    platform: linux/amd64
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -40,7 +39,6 @@ services:
 
   redis-cache:
     image: docker.io/redis:alpine
-    platform: linux/amd64
     volumes:
       - redis-cache-data:/data
     networks:
@@ -49,7 +47,6 @@ services:
 
   redis-queue:
     image: docker.io/redis:alpine
-    platform: linux/amd64
     volumes:
       - redis-queue-data:/data
     networks:
@@ -58,7 +55,6 @@ services:
 
   frappe:
     image: docker.io/frappe/bench:latest
-    platform: linux/amd64
     command: sleep infinity
     environment:
       - SHELL=/bin/bash
