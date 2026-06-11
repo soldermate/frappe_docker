@@ -10,7 +10,7 @@ dev: up shell
 
 # Start the devcontainer stack
 up:
-    docker compose -f .devcontainer/docker-compose.yml up -d
+    LOCAL_WORKSPACE_FOLDER=$(pwd) docker compose -f .devcontainer/docker-compose.yml up -d
 
 # Stop the devcontainer stack
 stop:
@@ -22,7 +22,7 @@ down:
 
 # Enter the frappe container in interactive mode
 shell:
-    docker compose -f .devcontainer/docker-compose.yml exec --user frappe --workdir /workspace/development/frappe-bench frappe bash
+    LOCAL_WORKSPACE_FOLDER=$(pwd) docker compose -f .devcontainer/docker-compose.yml exec --user frappe --workdir /workspace frappe bash
 
 # View logs from all devcontainer services
 logs:
