@@ -19,6 +19,8 @@ development/*
 
 # VS Code devcontainer
 *devcontainer.json
+# Exception: our working devcontainer config is tracked so it's ready on a fresh clone
+!.devcontainer/devcontainer.json
 *.code-workspace
 
 # Python

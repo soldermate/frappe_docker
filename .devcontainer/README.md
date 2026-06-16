@@ -80,7 +80,7 @@ After attaching for the first time:
 2. Command Palette → **Python: Select Interpreter** → enter path manually:
    `/workspace/development/frappe-bench/env/bin/python`
 
-Both the extension and the interpreter setting are saved inside the container and persist in the `vscode-extensions` named volume. You won't need to repeat this unless you destroy volumes.
+The extension is saved in the `vscode-extensions` named volume, but VS Code also keeps a record of remote extensions on your Mac. If you destroy volumes, VS Code will automatically reinstall extensions the next time you attach — you won't need to do it manually. The interpreter setting however is stored only in the volume and will need to be set again after a `just clean`.
 
 The Python interpreter path only exists after `bench init` has been run. If you attach before that, Pylance will show a warning — ignore it until the bench is set up.
 
@@ -114,5 +114,5 @@ Named volumes (MariaDB data, Redis data, VS Code extensions) are preserved. Your
 |---|---|---|---|
 | MariaDB databases | `mariadb-data` volume | Yes | No |
 | Bench + apps | `frappe_docker/development/` (bind mount) | Yes | Yes |
-| VS Code extensions | `vscode-extensions` volume | Yes | No |
-| VS Code interpreter setting | `vscode-extensions` volume | Yes | No |
+| VS Code extensions | `vscode-extensions` volume + Mac-local VS Code record | Yes | Auto-restored on next attach |
+| VS Code interpreter setting | `vscode-extensions` volume | Yes | No — must re-select after `just clean` |
