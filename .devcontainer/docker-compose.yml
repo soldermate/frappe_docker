@@ -1,3 +1,5 @@
+name: frappe_devcontainer
+
 services:
   mariadb:
     image: docker.io/mariadb:10.6
@@ -55,7 +57,7 @@ services:
 
   frappe:
     image: docker.io/frappe/bench:latest
-    command: sleep infinity
+    command: bash -c "sudo chown -R frappe:frappe /home/frappe/.vscode-server && sleep infinity"
     environment:
       - SHELL=/bin/bash
     volumes:
