@@ -2,7 +2,7 @@
 
 # Start Colima VM (Apple Silicon) and set Docker context
 colima:
-    colima start --arch aarch64 --vm-type=vz --vz-rosetta --cpu 4 --memory 8 --disk 60
+    colima start --arch aarch64 --vm-type=vz --cpu 4 --memory 8 --disk 60
     docker context use colima
 
 # Start stack and enter interactive mode in one command
