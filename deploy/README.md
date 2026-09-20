@@ -36,7 +36,7 @@ Do these once. (The Jenkins container change and the folders are already done.)
    scp deploy/env.example walter:plaintrace/.env      # or copy the contents by hand
    ssh walter 'chmod 600 ~/plaintrace/.env && nano ~/plaintrace/.env'
    ```
-   Set `DB_PASSWORD` and `ADMIN_PASSWORD` to long random values. **Do not use spaces, quotes, `$` or `#` in them** (the file is read by
+   Set `DB_PASSWORD` and `ADMIN_PASSWORD` to long random values (`ADMIN_PASSWORD` is temporary: see step 6). **Do not use spaces, quotes, `$` or `#` in them** (the file is read by
    both Docker Compose and the shell). Check `HTTP_PUBLISH_PORT`, `SMOKE_URL` and `PUBLIC_URL` use the server's LAN address.
 3. **Jenkins credential.** Manage Jenkins, Credentials, (global), Add Credentials: kind *Secret text*, secret = the token, **ID `github-pat`**.
 4. **Jenkins job.** New Item, name `plaintrace-deploy`, type *Pipeline*. Under Pipeline choose *Pipeline script from SCM*, SCM *Git*,
@@ -45,7 +45,10 @@ Do these once. (The Jenkins container change and the folders are already done.)
 5. **First run.** Build with Parameters: `APP_REF=develop`, tick **CREATE_SITE**. This builds the image, starts the stack and creates the
    site. It takes 10 to 20 minutes the first time.
 6. **After the first run**, in the production site (`http://192.168.0.172:8081`, user `Administrator`, the `ADMIN_PASSWORD`):
-   change the Administrator password; import the starter Part Classes with the Part Class Importer (download its template); set
+   **save the Administrator password in a password manager, then delete the `ADMIN_PASSWORD` line from `~/plaintrace/.env`**
+   (`ssh walter "sed -i '/^ADMIN_PASSWORD=/d' ~/plaintrace/.env"`). Only the first-run `CREATE_SITE` stage ever reads it, so nothing
+   breaks; and to create a site again, add the line back for that one run and delete it again. Create your own System Manager user for
+   everyday use (the Administrator account is then a spare). Then import the starter Part Classes with the Part Class Importer (download its template); set
    Library Settings; add your CAD Asset Sources and click Rebuild Index (private sources need their token); add the Digi-Key
    Service Connection and Test Connection; create a low-privilege user and API key for KiCad.
 
@@ -172,4 +175,6 @@ Production is pinned to Frappe `v16.22.0`, matching the dev bench (`FRAPPE_REF` 
 | *no current deployment recorded* | The first run has not happened yet: tick `CREATE_SITE` |
 | *site ... already exists* | Untick `CREATE_SITE` |
 | Smoke test: `/kicad/v1/` is not 401 | The app did not load: read the backend logs (`dc logs backend --tail 100`) |
+| Locked out of the site (forgot a password) | Password reset by email cannot work here (no outgoing email). Run on the server, and it prompts without echoing: `ssh -t walter "docker exec -it plaintrace-backend-1 bench --site plaintrace.local set-admin-password"` |
+| *CREATE_SITE* fails with `ADMIN_PASSWORD: unbound variable` | The temporary line was deleted from `.env`. Add `ADMIN_PASSWORD=<something>` back for that run only |
 | Site says "under maintenance" for a long time | A deploy died mid-way: check `state/phase`, then `docker exec ... set-maintenance-mode off` |
