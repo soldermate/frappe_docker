@@ -1,0 +1,283 @@
+// Deploys soldermate/plaintrace_engineering to the production stack on this server.
+//
+// Job setup and the one-time server preparation are in deploy/README.md.
+// Click "Build with Parameters", choose the branch or tag, and Jenkins does the rest:
+//   preflight -> build image -> backup -> deploy + migrate -> smoke test
+// If anything fails after the backup, the failure block rolls back automatically (previous image, and the
+// pre-deploy database backup if the migration had started).
+//
+// Where things live (paths are identical on the host and inside the Jenkins container):
+//   /home/switchlabs/plaintrace/.env        secrets and settings (not in git); see deploy/env.example
+//   /home/switchlabs/plaintrace/state/      current_tag, prev_tag, phase, last_backup, history.log
+//   /home/switchlabs/backups/plaintrace/    one folder per pre-deploy backup
+
+pipeline {
+    agent any
+
+    options {
+        disableConcurrentBuilds()
+        timeout(time: 60, unit: 'MINUTES')
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+    }
+
+    parameters {
+        string(name: 'APP_REF', defaultValue: 'develop',
+               description: 'Branch or tag of soldermate/plaintrace_engineering to deploy (it must already be pushed to GitHub)')
+        booleanParam(name: 'CREATE_SITE', defaultValue: false,
+                     description: 'FIRST RUN ONLY: also create the production site. Leave unticked for every normal deploy.')
+    }
+
+    environment {
+        PROJECT_DIR = '/home/switchlabs/plaintrace'
+        BACKUP_DIR  = '/home/switchlabs/backups/plaintrace'
+        APP_REPO    = 'soldermate/plaintrace_engineering'
+        IMAGE       = 'plaintrace'
+        FRAPPE_REF  = 'v16.22.0'   // keep equal to the Frappe version in the dev bench
+    }
+
+    stages {
+
+        stage('Preflight') {
+            steps {
+                script {
+                    bash('''
+mkdir -p "$PROJECT_DIR/state" "$BACKUP_DIR"
+echo none > "$PROJECT_DIR/state/phase"
+avail=$(df -Pk "$BACKUP_DIR" | awk 'NR==2{print int($4/1048576)}')
+echo "free disk for backups/build: ${avail} GB"
+[ "$avail" -ge 10 ] || { echo "ERROR: less than 10 GB free"; exit 1; }
+[ -n "$SITE_NAME" ] && [ -n "$DB_PASSWORD" ] || { echo "ERROR: SITE_NAME / DB_PASSWORD missing from .env"; exit 1; }
+''')
+                    withCredentials([string(credentialsId: 'github-pat', variable: 'GH_PAT')]) {
+                        bash('''
+set +x
+AUTH=$(printf 'x-access-token:%s' "$GH_PAT" | base64 -w0)
+gh() { git -c http.extraheader="Authorization: Basic $AUTH" ls-remote "https://github.com/$APP_REPO.git" "$@"; }
+gh --heads >/dev/null 2>&1 || { echo "ERROR: cannot read $APP_REPO with the 'github-pat' credential (token wrong, expired, or without Contents: read)"; exit 1; }
+head_sha=$(gh "refs/heads/$APP_REF" | cut -f1 | head -1 || true)
+peeled_sha=$(gh "refs/tags/$APP_REF^{}" | cut -f1 | head -1 || true)
+tag_sha=$(gh "refs/tags/$APP_REF" | cut -f1 | head -1 || true)
+sha=${head_sha:-${peeled_sha:-$tag_sha}}
+[ -n "$sha" ] || { echo "ERROR: '$APP_REF' is not a branch or tag of $APP_REPO on GitHub (has it been pushed?)"; exit 1; }
+echo "$sha" > "$WORKSPACE/.app_sha"
+echo "Resolved $APP_REF -> $sha"
+''')
+                    }
+                    env.APP_SHA = readFile('.app_sha').trim()
+                    env.TAG = env.APP_SHA.take(7)
+                    echo "Deploying ${params.APP_REF} (${env.APP_SHA}) as image ${env.IMAGE}:${env.TAG}"
+                }
+            }
+        }
+
+        stage('Build image') {
+            steps {
+                script {
+                    withCredentials([string(credentialsId: 'github-pat', variable: 'GH_PAT')]) {
+                        bash('''
+set +x
+umask 077
+APPS=$(mktemp)
+trap 'rm -f "$APPS"' EXIT
+printf '[{"url":"https://x-access-token:%s@github.com/%s","branch":"%s"}]' "$GH_PAT" "$APP_REPO" "$APP_REF" > "$APPS"
+set -x
+docker build -f deploy/Containerfile \
+  --build-arg FRAPPE_REF="$FRAPPE_REF" \
+  --build-arg CACHE_BUST="$APP_SHA" \
+  --build-arg APP_REF="$APP_REF" --build-arg APP_SHA="$APP_SHA" \
+  --secret id=apps_json,src="$APPS" \
+  -t "$IMAGE:$TAG" .
+''')
+                    }
+                    bash('''
+echo "--- built image labels:"
+docker image inspect "$IMAGE:$TAG" --format 'ref={{index .Config.Labels "plaintrace.app.ref"}} sha={{index .Config.Labels "plaintrace.app.sha"}}'
+echo "--- the token must not be baked into the image (expect nothing below):"
+docker history --no-trunc "$IMAGE:$TAG" | grep -i -E "x-access-token|github_pat" || echo "(clean)"
+''')
+                }
+            }
+        }
+
+        stage('Create site (first run)') {
+            when { expression { params.CREATE_SITE } }
+            steps {
+                script {
+                    bash('''
+sed -i "s/^CUSTOM_TAG=.*/CUSTOM_TAG=$TAG/" "$PROJECT_DIR/.env"; export CUSTOM_TAG=$TAG   # compose prefers the shell environment over the file
+dc up -d
+for i in $(seq 1 60); do dc exec -T backend bench --version >/dev/null 2>&1 && break; sleep 2; done
+for i in $(seq 1 60); do dc exec -T db healthcheck.sh --connect --innodb_initialized >/dev/null 2>&1 && break; sleep 2; done
+if dc exec -T backend test -d "sites/$SITE_NAME"; then echo "ERROR: site $SITE_NAME already exists; untick CREATE_SITE"; exit 1; fi
+bench new-site "$SITE_NAME" --mariadb-user-host-login-scope='%' --db-root-password "$DB_PASSWORD" --admin-password "$ADMIN_PASSWORD" --install-app plaintrace_engineering
+bench --site "$SITE_NAME" set-config developer_mode 0
+bench --site "$SITE_NAME" set-config host_name "$PUBLIC_URL"
+bench --site "$SITE_NAME" enable-scheduler
+echo "$TAG" > "$PROJECT_DIR/state/current_tag"
+''')
+                }
+            }
+        }
+
+        stage('Backup') {
+            when { expression { !params.CREATE_SITE } }
+            steps {
+                script {
+                    bash('''
+PREV=$(cat "$PROJECT_DIR/state/current_tag" 2>/dev/null || true)
+[ -n "$PREV" ] || { echo "ERROR: no current deployment recorded. For the very first run, tick CREATE_SITE."; exit 1; }
+echo "$PREV" > "$PROJECT_DIR/state/prev_tag"
+echo "current image: $IMAGE:$PREV"
+
+bench --site "$SITE_NAME" set-maintenance-mode on
+echo backup > "$PROJECT_DIR/state/phase"
+bench --site "$SITE_NAME" backup --with-files
+
+DEST="$BACKUP_DIR/$(date +%Y%m%d-%H%M%S)"; mkdir -p "$DEST"
+BDIR="/home/frappe/frappe-bench/sites/$SITE_NAME/private/backups"
+for f in $(dc exec -T backend ls -t "$BDIR" | head -4 | tr -d '\\r'); do dc cp "backend:$BDIR/$f" "$DEST/"; done
+gzip -t "$DEST"/*-database.sql.gz
+ls -la "$DEST"
+[ "$(ls "$DEST" | wc -l)" -ge 4 ] || { echo "ERROR: expected 4 backup files (database, config, files, private files)"; exit 1; }
+echo "$DEST" > "$PROJECT_DIR/state/last_backup"
+# keep the newest 14 pre-deploy sets
+ls -1dt "$BACKUP_DIR"/*/ | tail -n +15 | xargs -r rm -rf
+''')
+                }
+            }
+        }
+
+        stage('Deploy') {
+            when { expression { !params.CREATE_SITE } }
+            steps {
+                script {
+                    bash('''
+sed -i "s/^CUSTOM_TAG=.*/CUSTOM_TAG=$TAG/" "$PROJECT_DIR/.env"; export CUSTOM_TAG=$TAG   # compose prefers the shell environment over the file
+echo flipped > "$PROJECT_DIR/state/phase"
+dc up -d
+for i in $(seq 1 60); do dc exec -T backend bench --version >/dev/null 2>&1 && break; sleep 2; done
+echo migrating > "$PROJECT_DIR/state/phase"
+bench --site "$SITE_NAME" migrate
+bench --site "$SITE_NAME" clear-cache
+bench --site "$SITE_NAME" set-maintenance-mode off
+echo smoke > "$PROJECT_DIR/state/phase"
+''')
+                }
+            }
+        }
+
+        stage('Smoke test') {
+            steps {
+                script {
+                    bash('''
+ok=0
+for i in $(seq 1 30); do
+  out=$(curl -fsS -m 5 "$SMOKE_URL/api/method/ping" 2>/dev/null || true)
+  case "$out" in *pong*) ok=1; break ;; esac
+  sleep 2
+done
+[ "$ok" = 1 ] || { echo "SMOKE FAILED: /api/method/ping did not answer"; exit 1; }
+code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$SMOKE_URL/login")
+[ "$code" = 200 ] || { echo "SMOKE FAILED: /login returned $code"; exit 1; }
+code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$SMOKE_URL/kicad/v1/")
+[ "$code" = 401 ] || { echo "SMOKE FAILED: /kicad/v1/ returned $code (expected 401 without a token)"; exit 1; }
+bad=$(dc ps --format '{{.Service}} {{.State}}' | grep -i -E 'restarting|dead|unhealthy' || true)
+[ -z "$bad" ] || { echo "SMOKE FAILED: unhealthy containers:"; echo "$bad"; exit 1; }
+tb=$(dc logs --since 2m 2>&1 | grep -c Traceback || true)
+[ "$tb" -eq 0 ] || echo "WARNING: $tb Traceback line(s) in the last 2 minutes of logs (not fatal; check them)"
+echo "--- versions now running:"
+bench --site "$SITE_NAME" version
+echo done > "$PROJECT_DIR/state/phase"
+echo "SMOKE OK"
+''')
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                bash('''
+docker tag "$IMAGE:$TAG" "$IMAGE:current"
+echo "$TAG" > "$PROJECT_DIR/state/current_tag"
+echo "$(date -Is) ref=$APP_REF sha=$APP_SHA tag=$TAG build=$BUILD_NUMBER" >> "$PROJECT_DIR/state/history.log"
+PREV=$(cat "$PROJECT_DIR/state/prev_tag" 2>/dev/null || true)
+# keep the newest 5 image tags (plus the current and previous ones), then drop old build cache
+for t in $(docker image ls "$IMAGE" --format '{{.Tag}}' | grep -v -E '^(current|none)$' | tail -n +6); do
+  [ "$t" = "$TAG" ] || [ "$t" = "$PREV" ] || docker rmi "$IMAGE:$t" || true
+done
+docker builder prune -f --filter until=168h >/dev/null || true
+echo "Deployed $APP_REF ($TAG). History:"; tail -5 "$PROJECT_DIR/state/history.log"
+''')
+            }
+        }
+        failure { script { rollback() } }
+        aborted { script { rollback() } }
+    }
+}
+
+// Runs a bash snippet with the production settings loaded and two helpers:
+//   dc     = docker compose for the production stack       bench = bench inside the backend container
+// Snippets use single-quoted Groovy strings, so Groovy never expands $variables (and never sees secrets).
+def bash(String body) {
+    sh(script: '''#!/bin/bash
+set +x
+set -euo pipefail
+set -a; . "$PROJECT_DIR/.env"; set +a
+dc() { docker compose --project-name plaintrace --env-file "$PROJECT_DIR/.env" \
+  -f compose.yaml -f overrides/compose.mariadb.yaml -f overrides/compose.redis.yaml -f overrides/compose.noproxy.yaml "$@"; }
+bench() { dc exec -T backend bench "$@"; }
+''' + body)
+}
+
+// Automatic rollback, driven by how far the deploy got (state/phase):
+//   none / done          nothing changed on the running site
+//   backup               only maintenance mode was on -> switch it off
+//   flipped              new image started, migrate not begun -> restart the previous image
+//   migrating / smoke    migrate began -> previous image AND restore the pre-deploy database backup
+def rollback() {
+    if (params.CREATE_SITE) {
+        echo 'First-run failure: nothing to roll back. Read the log above, fix the cause and run again '
+        echo '(if the site was half-created, remove it with: docker compose down -v, from the README).'
+        return
+    }
+    bash('''
+phase=$(cat "$PROJECT_DIR/state/phase" 2>/dev/null || echo none)
+echo "=== FAILURE at phase: $phase ==="
+case "$phase" in
+  none|done)
+    echo "The running site was not changed." ;;
+  backup)
+    echo "Switching maintenance mode off."
+    bench --site "$SITE_NAME" set-maintenance-mode off || true ;;
+  flipped|migrating|smoke)
+    PREV=$(cat "$PROJECT_DIR/state/prev_tag")
+    echo "Rolling back to image $IMAGE:$PREV"
+    sed -i "s/^CUSTOM_TAG=.*/CUSTOM_TAG=$PREV/" "$PROJECT_DIR/.env"; export CUSTOM_TAG=$PREV   # compose prefers the shell environment over the file
+    dc up -d
+    for i in $(seq 1 60); do dc exec -T backend bench --version >/dev/null 2>&1 && break; sleep 2; done
+    if [ "$phase" != flipped ]; then
+      SET=$(cat "$PROJECT_DIR/state/last_backup")
+      echo "Restoring the database and files from $SET"
+      DB=$(ls "$SET"/*-database.sql.gz | head -1)
+      PUB=$(ls "$SET"/*-files.tar | grep -v private-files | head -1)
+      PRIV=$(ls "$SET"/*-private-files.tar | head -1)
+      dc exec -T backend mkdir -p /tmp/restore
+      for f in "$DB" "$PUB" "$PRIV"; do dc cp "$f" "backend:/tmp/restore/"; done
+      bench --site "$SITE_NAME" restore "/tmp/restore/$(basename "$DB")" \
+        --with-public-files "/tmp/restore/$(basename "$PUB")" \
+        --with-private-files "/tmp/restore/$(basename "$PRIV")" \
+        --db-root-password "$DB_PASSWORD" --force
+      dc exec -T backend rm -rf /tmp/restore
+    fi
+    bench --site "$SITE_NAME" set-maintenance-mode off || true
+    bench --site "$SITE_NAME" clear-cache || true
+    echo "ROLLED BACK to $IMAGE:$PREV. The failed deploy is described in the log above."
+    echo none > "$PROJECT_DIR/state/phase" ;;
+  *)
+    echo "Unknown phase '$phase'; not touching anything. Check the state by hand (see README)." ;;
+esac
+''')
+}
