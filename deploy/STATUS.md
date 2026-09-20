@@ -45,6 +45,19 @@ passed through by an nginx block baked into the image).
 3. **Restore drill (optional but wise).** Restore the newest backup set from `~/backups/plaintrace/` into a scratch site, and check that a
    stored password (the Digi-Key secret) still decrypts, which proves `site_config_backup.json` is being kept.
 
+**Friendly name (planned for tomorrow).** Goal: open production at `http://plaintrace` (no port), and point KiCad at
+`http://plaintrace/kicad` (`root_url`; `api_version` stays `v1`). Today `http://walter:8081` already works from the Mac, because the router knows
+the host name `walter`. Steps:
+1. *(Owner, in the router)* Pin `192.168.0.172` to the server with a DHCP reservation, because the address is currently handed out by DHCP
+   and could change. Then, if the router allows local DNS entries, add the name `plaintrace` -> `192.168.0.172`. If it does not, add
+   `192.168.0.172 plaintrace` to the Mac's `/etc/hosts` (`sudo nano /etc/hosts`). Avoid a `.local` name (macOS treats it as mDNS).
+2. *(Me)* Publish the site on port 80 (free on the server): in `~/plaintrace/.env` set `HTTP_PUBLISH_PORT=192.168.0.172:80`, and
+   `SMOKE_URL` and `PUBLIC_URL` to `http://plaintrace` (or the chosen name); recreate the frontend (a few seconds of downtime); run
+   `bench --site plaintrace.local set-config host_name http://plaintrace`. The site itself accepts any host name (`FRAPPE_SITE_NAME_HEADER`).
+3. *(Me)* Update `env.example`, the README (URLs and the "What is where" table) and this file to the new address. Jenkins stays on `:8080`.
+4. *(Owner)* Update KiCad's `.kicad_httplib` `root_url` to `http://plaintrace/kicad`, reload the library, and confirm it loads.
+Check afterwards: a deploy still passes its smoke test (it uses `SMOKE_URL`).
+
 **Smaller items:**
 - Confirm KiCad loads the library from production (API key of a low-privilege user).
 - Scheduled nightly backup: a second small Jenkins job (not built). Until then, the only backups are the ones each deploy takes.
