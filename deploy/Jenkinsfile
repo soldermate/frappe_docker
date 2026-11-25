@@ -160,6 +160,10 @@ for i in $(seq 1 60); do dc exec -T backend bench --version >/dev/null 2>&1 && b
 echo migrating > "$PROJECT_DIR/state/phase"
 bench --site "$SITE_NAME" migrate
 bench --site "$SITE_NAME" clear-cache
+# clear-cache does not reliably evict Frappe's cached assets.json, so pages keep asking for the previous build's CSS/JS file names (404, no styling)
+dc exec -T redis-cache redis-cli flushall
+dc restart backend
+for i in $(seq 1 60); do dc exec -T backend bench --version >/dev/null 2>&1 && break; sleep 2; done
 bench --site "$SITE_NAME" set-maintenance-mode off
 echo smoke > "$PROJECT_DIR/state/phase"
 ''')
@@ -180,6 +184,10 @@ done
 [ "$ok" = 1 ] || { echo "SMOKE FAILED: /api/method/ping did not answer"; exit 1; }
 code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$SMOKE_URL/login")
 [ "$code" = 200 ] || { echo "SMOKE FAILED: /login returned $code"; exit 1; }
+css=$(curl -fsS -m 10 "$SMOKE_URL/login" | grep -o -E 'href="/assets/[^"]+\.css' | head -1 | sed 's/^href="//' || true)
+[ -n "$css" ] || { echo "SMOKE FAILED: /login references no stylesheet"; exit 1; }
+code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$SMOKE_URL$css")
+[ "$code" = 200 ] || { echo "SMOKE FAILED: stylesheet $css returned $code (stale assets cache? page would be unstyled)"; exit 1; }
 code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$SMOKE_URL/kicad/v1/")
 [ "$code" = 401 ] || { echo "SMOKE FAILED: /kicad/v1/ returned $code (expected 401 without a token)"; exit 1; }
 bad=$(dc ps --format '{{.Service}} {{.State}}' | grep -i -E 'restarting|dead|unhealthy' || true)
@@ -274,6 +282,8 @@ case "$phase" in
     fi
     bench --site "$SITE_NAME" set-maintenance-mode off || true
     bench --site "$SITE_NAME" clear-cache || true
+    dc exec -T redis-cache redis-cli flushall || true
+    dc restart backend || true
     echo "ROLLED BACK to $IMAGE:$PREV. The failed deploy is described in the log above."
     echo none > "$PROJECT_DIR/state/phase" ;;
   *)
